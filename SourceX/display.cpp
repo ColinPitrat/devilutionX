@@ -23,6 +23,11 @@ extern BOOL was_window_init; /** defined in dx.cpp */
 
 extern SDL_Surface *renderer_texture_surface; /** defined in dx.cpp */
 
+int screenWidth;
+int screenHeight;
+int viewportHeight;
+int borderRight;
+
 #ifdef USE_SDL1
 void SetVideoMode(int width, int height, int bpp, uint32_t flags) {
 	SDL_Log("Setting video mode %dx%d bpp=%u flags=0x%08X", width, height, bpp, flags);
@@ -47,11 +52,80 @@ bool IsFullScreen() {
 }
 #endif
 
-bool SpawnWindow(const char *lpWindowName, int nWidth, int nHeight)
+void AdjustToScreenGeometry(int width, int height)
+{
+	screenWidth = width;
+	screenHeight = height;
+
+	borderRight = 64;
+	if (screenWidth % 4) {
+		// The buffer needs to be devisable by 4 for the engine to blit correctly
+		borderRight += 4 - screenWidth % 4;
+	}
+
+	viewportHeight = screenHeight;
+	if (screenWidth <= PANEL_WIDTH) {
+		// Part of the screen is fully obscured by the UI
+		viewportHeight -= PANEL_HEIGHT;
+	}
+}
+
+void InitDesiredScreenRes(int width, int height, bool oar, bool useIntegerScaling)
+{
+	screenWidth = width;
+	screenHeight = height;
+
+#ifndef USE_SDL1
+	if (!oar) {
+		SDL_DisplayMode mode;
+
+		if (SDL_GetDesktopDisplayMode(0, &mode) != 0) {
+			ErrSdl();
+		}
+
+		if (!useIntegerScaling) {
+			float wFactor = (float)mode.w / screenWidth;
+			float hFactor = (float)mode.h / screenHeight;
+
+			if (wFactor > hFactor) {
+				screenWidth = mode.w * screenHeight / mode.h;
+			} else {
+				screenHeight = mode.h * screenWidth / mode.w;
+			}
+		} else {
+			int wFactor = mode.w / screenWidth;
+			int hFactor = mode.h / screenHeight;
+
+			if (wFactor > hFactor) {
+				screenWidth = mode.w / hFactor;
+				screenHeight = mode.h / hFactor;
+			} else {
+				screenWidth = mode.w / wFactor;
+				screenHeight = mode.h / wFactor;
+			}
+		}
+	}
+#endif
+
+	AdjustToScreenGeometry(screenWidth, screenHeight);
+}
+
+bool SpawnWindow(const char *lpWindowName)
 {
 	if (SDL_Init(SDL_INIT_EVERYTHING & ~SDL_INIT_HAPTIC) <= -1) {
 		ErrSdl();
 	}
+
+	int width = 640;
+	DvlIntSetting("width", &width);
+	int height = 480;
+	DvlIntSetting("height", &height);
+	BOOL oar = false;
+	DvlIntSetting("original aspect ratio", (int *)&oar);
+	BOOL integerScalingEnabled = false;
+	DvlIntSetting("integer scaling", (int *)&integerScalingEnabled);
+
+	InitDesiredScreenRes(width, height, oar, integerScalingEnabled);
 
 #ifdef USE_SDL1
 	SDL_EnableUNICODE(1);
@@ -65,7 +139,7 @@ bool SpawnWindow(const char *lpWindowName, int nWidth, int nHeight)
 	if (fullscreen)
 		DvlIntSetting("fullscreen", (int *)&fullscreen);
 
-	int grabInput = 1;
+	int grabInput = 0;
 	DvlIntSetting("grab input", &grabInput);
 
 #ifdef USE_SDL1
@@ -96,25 +170,24 @@ bool SpawnWindow(const char *lpWindowName, int nWidth, int nHeight)
 		flags |= SDL_WINDOW_INPUT_GRABBED;
 	}
 
-	ghMainWnd = SDL_CreateWindow(lpWindowName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, nWidth, nHeight, flags);
+	ghMainWnd = SDL_CreateWindow(lpWindowName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, screenWidth, screenHeight, flags);
 #endif
 	if (ghMainWnd == NULL) {
 		ErrSdl();
 	}
 
 	int refreshRate = 60;
-#ifndef USE_SDL1
 	SDL_DisplayMode mode;
-	SDL_GetDisplayMode(0, 0, &mode);
+	SDL_GetCurrentDisplayMode(0, &mode);
 	if (mode.refresh_rate != 0) {
 		refreshRate = mode.refresh_rate;
 	}
-#endif
 	refreshDelay = 1000000 / refreshRate;
 
 	if (upscale) {
 #ifdef USE_SDL1
 		SDL_Log("upscaling not supported with USE_SDL1");
+		AdjustToScreenGeometry(mode.w, mode.h);
 #else
 		Uint32 rendererFlags = SDL_RENDERER_ACCELERATED;
 
@@ -129,21 +202,21 @@ bool SpawnWindow(const char *lpWindowName, int nWidth, int nHeight)
 			ErrSdl();
 		}
 
-		texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, nWidth, nHeight);
+		texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, screenWidth, screenHeight);
 		if (texture == NULL) {
 			ErrSdl();
 		}
 
-		int integerScalingEnabled = 0;
-		DvlIntSetting("integer scaling", &integerScalingEnabled);
 		if (integerScalingEnabled && SDL_RenderSetIntegerScale(renderer, SDL_TRUE) < 0) {
 			ErrSdl();
 		}
 
-		if (SDL_RenderSetLogicalSize(renderer, nWidth, nHeight) <= -1) {
+		if (SDL_RenderSetLogicalSize(renderer, screenWidth, screenHeight) <= -1) {
 			ErrSdl();
 		}
 #endif
+	} else {
+		AdjustToScreenGeometry(mode.w, mode.h);
 	}
 
 	return ghMainWnd != NULL;
